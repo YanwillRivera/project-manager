@@ -1,5 +1,10 @@
 "use client";
 
+/*
+  Calculadora independiente:
+  estima costos sin guardar el resultado en un proyecto.
+*/
+
 import { useState } from "react";
 
 type CalculatorMaterial = {
@@ -14,10 +19,12 @@ export default function CostCalculator() {
   const [quantity, setQuantity] = useState("");
   const [unitPrice, setUnitPrice] = useState("");
 
+  /* Lista temporal de materiales solo para esta estimación. */
   const [calculatorMaterials, setCalculatorMaterials] = useState<
     CalculatorMaterial[]
   >([]);
 
+  /* Añade una línea a la estimación y limpia los inputs. */
   function addMaterial() {
     const newMaterial: CalculatorMaterial = {
       id: Date.now(),

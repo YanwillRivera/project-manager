@@ -1,5 +1,9 @@
 "use client";
 
+/*
+  Gráfica: presupuesto del proyecto vs costo real de materiales.
+*/
+
 import {
   BarChart,
   Bar,
@@ -38,7 +42,7 @@ export default function BudgetChart({
         </h3>
 
         <p className="mt-1 text-sm text-gray-500">
-          Comparison between planned budget and current material costs.
+          Comparison between planned budget and all recorded project costs.
         </p>
       </div>
 

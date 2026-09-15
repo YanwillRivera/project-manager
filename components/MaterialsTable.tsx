@@ -1,16 +1,29 @@
+import { useState } from "react";
 import { Material } from "./CsvUploader";
+
+/*
+  Tabla de materiales del proyecto:
+  cada fila y el costo total.
+*/
 
 type MaterialsTableProps = {
   materials: Material[];
+  categories: string[];
+  onUpdate: (materials: Material[]) => void;
 };
 
 export default function MaterialsTable({
   materials,
+  categories,
+  onUpdate,
 }: MaterialsTableProps) {
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [draft, setDraft] = useState<Material | null>(null);
+
   if (materials.length === 0) {
     return (
       <div className="mt-6 rounded-xl border border-[#292e37] bg-[#191d24] p-6 text-center text-sm text-gray-500">
-        No materials imported yet.
+        No materials added yet.
       </div>
     );
   }
@@ -21,13 +34,61 @@ export default function MaterialsTable({
     0
   );
 
+  function startEditing(index: number) {
+    setEditingIndex(index);
+    setDraft({ ...materials[index] });
+  }
+
+  function saveMaterial() {
+    if (!draft || editingIndex === null) return;
+
+    if (!draft.material.trim() || !draft.category.trim()) {
+      alert("Please complete the material name and category.");
+      return;
+    }
+
+    if (!Number.isFinite(draft.quantity) || draft.quantity <= 0) {
+      alert("Please enter a valid quantity.");
+      return;
+    }
+
+    if (!Number.isFinite(draft.unit_price) || draft.unit_price < 0) {
+      alert("Please enter a valid unit price.");
+      return;
+    }
+
+    onUpdate(
+      materials.map((material, index) =>
+        index === editingIndex
+          ? {
+              ...draft,
+              material: draft.material.trim(),
+              category: draft.category.trim(),
+            }
+          : material
+      )
+    );
+    setEditingIndex(null);
+    setDraft(null);
+  }
+
+  function deleteMaterial(index: number) {
+    if (!window.confirm("Delete this material from the project?")) return;
+
+    onUpdate(materials.filter((_, materialIndex) => materialIndex !== index));
+    if (editingIndex === index) {
+      setEditingIndex(null);
+      setDraft(null);
+    }
+  }
+
   return (
     <div className="mt-6 overflow-hidden rounded-xl border border-[#292e37] bg-[#191d24]">
       <div className="border-b border-[#292e37] p-5">
-        <h3 className="font-semibold">Imported Materials</h3>
+        <h3 className="font-semibold">Project Materials</h3>
 
         <p className="mt-1 text-sm text-gray-500">
-          {materials.length} materials imported from CSV
+          {materials.length} materials in this project
         </p>
       </div>
 
@@ -41,6 +102,7 @@ export default function MaterialsTable({
               <th className="px-5 py-4">Unit</th>
               <th className="px-5 py-4">Unit Price</th>
               <th className="px-5 py-4">Total Cost</th>
+              <th className="px-5 py-4">Actions</th>
             </tr>
           </thead>
 
@@ -48,6 +110,7 @@ export default function MaterialsTable({
             {materials.map((material, index) => {
               const materialTotal =
                 material.quantity * material.unit_price;
+              const isEditing = editingIndex === index && draft !== null;
 
               return (
                 <tr
@@ -55,35 +118,158 @@ export default function MaterialsTable({
                   className="border-b border-[#292e37] last:border-0"
                 >
                   <td className="px-5 py-4 font-medium text-white">
-                    {material.material}
+                    {isEditing ? (
+                      <input
+                        value={draft.material}
+                        onChange={(event) =>
+                          setDraft({ ...draft, material: event.target.value })
+                        }
+                        className="w-full min-w-32 rounded border border-[#3a414d] bg-[#15181e] px-2 py-1 text-sm text-white outline-none focus:border-[#e5a82b]"
+                      />
+                    ) : (
+                      material.material
+                    )}
                   </td>
 
                   <td className="px-5 py-4 text-gray-400">
-                    {material.category}
+                    {isEditing ? (
+                      <div className="flex max-w-xs flex-wrap gap-1.5">
+                        {categories.map((category) => (
+                          <button
+                            key={category}
+                            type="button"
+                            onClick={() => setDraft({ ...draft, category })}
+                            className={`rounded-full border px-2 py-1 text-xs transition ${
+                              draft.category === category
+                                ? "border-[#e5a82b] bg-[#e5a82b] font-semibold text-black"
+                                : "border-[#3a414d] bg-[#20242c] text-gray-300 hover:border-[#e5a82b]"
+                            }`}
+                          >
+                            {category}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      material.category
+                    )}
                   </td>
 
                   <td className="px-5 py-4">
-                    {material.quantity}
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="any"
+                        value={draft.quantity}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            quantity: Number(event.target.value),
+                          })
+                        }
+                        className="w-24 rounded border border-[#3a414d] bg-[#15181e] px-2 py-1 text-sm text-white outline-none focus:border-[#e5a82b]"
+                      />
+                    ) : (
+                      material.quantity
+                    )}
                   </td>
 
                   <td className="px-5 py-4 text-gray-400">
-                    {material.unit}
+                    {isEditing ? (
+                      <select
+                        value={draft.unit}
+                        onChange={(event) =>
+                          setDraft({ ...draft, unit: event.target.value })
+                        }
+                        className="rounded border border-[#3a414d] bg-[#15181e] px-2 py-1 text-sm text-white outline-none focus:border-[#e5a82b]"
+                      >
+                        {["pcs", "kg", "lb", "m", "m2", "m3", "ft", "bag", "box", "gal", "L", "ton"].map((unit) => (
+                          <option key={unit} value={unit}>{unit}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      material.unit
+                    )}
                   </td>
 
                   <td className="px-5 py-4">
-                    $
-                    {material.unit_price.toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })}
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={draft.unit_price}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            unit_price: Number(event.target.value),
+                          })
+                        }
+                        className="w-28 rounded border border-[#3a414d] bg-[#15181e] px-2 py-1 text-sm text-white outline-none focus:border-[#e5a82b]"
+                      />
+                    ) : (
+                      <>
+                        $
+                        {material.unit_price.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </>
+                    )}
                   </td>
 
                   <td className="px-5 py-4 font-semibold text-[#e5a82b]">
                     $
-                    {materialTotal.toLocaleString(undefined, {
+                    {(isEditing
+                      ? draft.quantity * draft.unit_price
+                      : materialTotal
+                    ).toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
                     })}
+                  </td>
+
+                  <td className="px-5 py-4">
+                    <div className="flex gap-2">
+                      {isEditing ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={saveMaterial}
+                            className="rounded border border-green-500/30 px-3 py-1 text-xs text-green-400 hover:bg-green-500/10"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingIndex(null);
+                              setDraft(null);
+                            }}
+                            className="rounded border border-[#292e37] px-3 py-1 text-xs hover:bg-[#252a32]"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => startEditing(index)}
+                            className="rounded border border-[#292e37] px-3 py-1 text-xs hover:bg-[#252a32]"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteMaterial(index)}
+                            className="rounded border border-red-500/30 px-3 py-1 text-xs text-red-400 hover:bg-red-500/10"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -93,7 +279,7 @@ export default function MaterialsTable({
           <tfoot className="bg-[#16191f]">
             <tr>
               <td
-                colSpan={5}
+                colSpan={6}
                 className="px-5 py-4 text-right font-semibold"
               >
                 Total Material Cost

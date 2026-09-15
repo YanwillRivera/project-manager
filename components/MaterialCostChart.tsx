@@ -1,5 +1,9 @@
 "use client";
 
+/*
+  Gráfica horizontal: costo de cada material (quantity × unit_price).
+*/
+
 import {
   BarChart,
   Bar,
