@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  /*
+    No se requieren opciones adicionales: Next.js usa sus valores por defecto
+    para la ruta estática de esta aplicación y el build con Turbopack.
+  */
 };
 
 export default nextConfig;

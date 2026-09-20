@@ -15,6 +15,7 @@ import {
 } from "recharts";
 
 type BudgetChartProps = {
+  /** Valores ya calculados por el padre para comparar plan e inversión real. */
   budget: number;
   invested: number;
 };
@@ -23,6 +24,7 @@ export default function BudgetChart({
   budget,
   invested,
 }: BudgetChartProps) {
+  /* Se conserva un formato uniforme para que ambas métricas compartan el eje. */
   const data = [
     {
       name: "Project Budget",
@@ -46,6 +48,7 @@ export default function BudgetChart({
         </p>
       </div>
 
+      {/* Recharts adapta el gráfico al ancho disponible del panel. */}
       <ResponsiveContainer width="100%" height="85%">
         <BarChart data={data}>
           <CartesianGrid stroke="#292e37" vertical={false} />

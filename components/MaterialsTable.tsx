@@ -2,13 +2,17 @@ import { useState } from "react";
 import { Material } from "./CsvUploader";
 
 /*
-  Tabla de materiales del proyecto:
-  cada fila y el costo total.
+  Tabla editable de materiales del proyecto. Recibe el estado desde el padre y
+  le devuelve la lista completa tras una edición o eliminación; así la tabla no
+  decide cómo persistir los datos y mantiene una única fuente de verdad.
 */
 
 type MaterialsTableProps = {
+  /** Filas que se muestran y se editan en la tabla. */
   materials: Material[];
+  /** Categorías disponibles para el selector de edición. */
   categories: string[];
+  /** Callback que reemplaza las filas del proyecto en el estado superior. */
   onUpdate: (materials: Material[]) => void;
 };
 
@@ -17,6 +21,7 @@ export default function MaterialsTable({
   categories,
   onUpdate,
 }: MaterialsTableProps) {
+  /* Estado transitorio del editor inline: índice y copia modificable de la fila. */
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<Material | null>(null);
 

@@ -1,11 +1,18 @@
 @import "tailwindcss";
 
+/*
+  Hoja global de presentación. Tailwind aporta las utilidades; estas reglas
+  fijan los colores base, el desplazamiento entre anclas y las transiciones
+  compartidas por botones y enlaces. No contiene estado ni lógica de datos.
+*/
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
 }
 
 @theme inline {
+  /* Expone los tokens CSS para que Tailwind use los colores y fuentes globales. */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
@@ -13,6 +20,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  /* Ajuste mínimo para el contenido fuera del lienzo principal en modo oscuro. */
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
@@ -20,7 +28,37 @@
 }
 
 body {
+  /* La interfaz utiliza su propia paleta oscura en el contenido de la app. */
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+[id] {
+  /* Evita que la barra superior tape las secciones enlazadas del workspace. */
+  scroll-margin-top: 24px;
+}
+
+button,
+a {
+  /* Feedback visual común sin alterar las acciones de los elementos. */
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+button:not(:disabled):hover,
+a:hover {
+  transform: translateY(-2px);
+}
+
+button:active,
+a:active {
+  transform: translateY(0);
 }

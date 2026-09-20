@@ -8,7 +8,7 @@
   Este archivo contiene toda la aplicación:
   1. Tipos y funciones de cálculo (presupuesto, profit, close-out)
   2. Home: estado, localStorage y acciones de proyectos
-  3. Sidebar + vistas: Dashboard, Projects, Cost Calculator
+  3. Sidebar + vistas: Dashboard, Projects
   4. Componentes internos: tarjetas, detalle de proyecto, estadísticas
 
   Los materiales se gestionan DENTRO de cada proyecto
@@ -27,7 +27,6 @@ import ManualMaterialForm from "../components/ManualMaterialForm";
 import MaterialsTable from "../components/MaterialsTable";
 import BudgetChart from "../components/BudgetChart";
 import MaterialCostChart from "../components/MaterialCostChart";
-import CostCalculator from "../components/CostCalculator";
 
 /*
   ============================================================
@@ -92,15 +91,27 @@ type DailyLog = {
 };
 
 function asString(value: unknown) {
+  /* Lectura segura de backups: los valores no textuales se convierten en vacío. */
   return typeof value === "string" ? value : "";
 }
 
 function asNumber(value: unknown, fallback = 0) {
+  /* Evita propagar NaN o infinitos desde JSON/importaciones hacia los cálculos. */
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  /* El guard permite validar la forma mínima de un objeto JSON importado. */
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function normalizeProject(value: unknown): Project {
+  /*
+    Compatibilidad de persistencia: reconstruye un proyecto con valores
+    seguros y defaults para que datos antiguos o parcialmente editados no
+    rompan el renderizado.
+  */
   const project = (value ?? {}) as Partial<Project> & {
     materials?: unknown[];
     tasks?: unknown[];
@@ -190,6 +201,23 @@ function normalizeProject(value: unknown): Project {
   };
 }
 
+function normalizeImportedProjects(value: unknown): Project[] {
+  /* Acepta tanto el array histórico de localStorage como el formato de backup. */
+  const projects = isRecord(value) && Array.isArray(value.projects)
+    ? value.projects
+    : value;
+
+  if (!Array.isArray(projects)) {
+    throw new Error("The backup must contain an array of projects.");
+  }
+
+  if (!projects.every(isRecord)) {
+    throw new Error("Every backup project must be a JSON object.");
+  }
+
+  return projects.map(normalizeProject);
+}
+
 /* Costo agrupado por categoría (ej. concreto, madera). */
 type CategoryCost = {
   category: string;
@@ -223,10 +251,12 @@ function getMaterialCost(materials: Material[]) {
 }
 
 function getExpenseCost(expenses: Expense[]) {
+  /* Gastos de mano de obra, subcontratas, equipo, permisos y otros. */
   return expenses.reduce((total, expense) => total + expense.amount, 0);
 }
 
 function getProjectCost(project: Project) {
+  /* Coste total usado en tarjetas, gráficos y cierre: materiales + gastos. */
   return getMaterialCost(project.materials) + getExpenseCost(project.expenses);
 }
 
@@ -325,12 +355,16 @@ function getProjectCloseout(project: Project) {
 */
 
 export default function Home() {
-  /* Vista actual: "dashboard" | "projects" | "calculator" */
+  /* Vista actual: "dashboard" | "projects" */
   const [activeView, setActiveView] = useState("dashboard");
 
   /* Lista de todos los proyectos del usuario. */
   const [projects, setProjects] = useState<Project[]>([]);
-  const skipFirstSave = useRef(true);
+  /* Impide sobrescribir localStorage antes de terminar la primera lectura. */
+  const hasHydratedProjects = useRef(false);
+  const [storageMessage, setStorageMessage] = useState<string | null>(null);
+  const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
 
   /* Proyecto abierto en el dashboard de detalle (null = dashboard general). */
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(
@@ -351,21 +385,39 @@ export default function Home() {
     Al cargar la página, recupera los proyectos del navegador.
   */
   useEffect(() => {
+    /* Solo se ejecuta en cliente: localStorage no existe durante SSR. */
     const savedProjects = localStorage.getItem(
       "project-manager-projects"
     );
 
     if (!savedProjects) {
+      hasHydratedProjects.current = true;
       return;
     }
 
     try {
       const parsed = JSON.parse(savedProjects);
       if (Array.isArray(parsed)) {
-        window.setTimeout(() => setProjects(parsed.map(normalizeProject)), 0);
+        const normalizedProjects = normalizeImportedProjects(parsed);
+        hasHydratedProjects.current = true;
+        window.setTimeout(() => setProjects(normalizedProjects), 0);
+      } else {
+        window.setTimeout(
+          () =>
+            setStorageMessage(
+              "Saved project data has an invalid format, so it was not loaded."
+            ),
+          0
+        );
       }
     } catch {
-      window.setTimeout(() => setProjects([]), 0);
+      window.setTimeout(
+        () =>
+          setStorageMessage(
+            "Saved project data could not be read. Your existing backup was left untouched."
+          ),
+        0
+      );
     }
   }, []);
 
@@ -373,26 +425,114 @@ export default function Home() {
     Cada vez que cambia la lista, la vuelve a guardar.
   */
   useEffect(() => {
-    if (skipFirstSave.current) {
-      skipFirstSave.current = false;
+    /* Persistencia automática; los avisos informan si el navegador la rechaza. */
+    if (!hasHydratedProjects.current) {
       return;
     }
-    localStorage.setItem(
-      "project-manager-projects",
-      JSON.stringify(projects)
-    );
+    try {
+      localStorage.setItem(
+        "project-manager-projects",
+        JSON.stringify(projects)
+      );
+      window.setTimeout(() => setStorageMessage(null), 0);
+    } catch {
+      window.setTimeout(
+        () =>
+          setStorageMessage(
+            "Changes are visible now, but could not be saved in this browser."
+          ),
+        0
+      );
+    }
   }, [projects]);
+
+  function exportProjects() {
+    /* Genera un JSON versionado y dispara la descarga sin servidor intermedio. */
+    setBackupError(null);
+    setBackupMessage(null);
+
+    try {
+      const backup = {
+        format: "project-manager-backup",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        projects,
+      };
+      const blob = new Blob([JSON.stringify(backup, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `project-manager-backup-${new Date()
+        .toISOString()
+        .slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setBackupMessage(
+        `Backup exported successfully (${projects.length} ${
+          projects.length === 1 ? "project" : "projects"
+        }).`
+      );
+    } catch {
+      setBackupError("The project backup could not be exported.");
+    }
+  }
+
+  async function importProjects(event: React.ChangeEvent<HTMLInputElement>) {
+    /* Valida el backup completo antes de pedir confirmación y reemplazar datos. */
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    setBackupError(null);
+    setBackupMessage(null);
+
+    if (!file) return;
+
+    try {
+      const parsed = JSON.parse(await file.text()) as unknown;
+      const importedProjects = normalizeImportedProjects(parsed);
+      const confirmed = window.confirm(
+        `Replace all ${projects.length} current ${
+          projects.length === 1 ? "project" : "projects"
+        } with ${importedProjects.length} imported ${
+          importedProjects.length === 1 ? "project" : "projects"
+        }? This cannot be undone.`
+      );
+
+      if (!confirmed) return;
+
+      setProjects(importedProjects);
+      setSelectedProjectId(null);
+      setBackupMessage(
+        `Backup imported successfully (${importedProjects.length} ${
+          importedProjects.length === 1 ? "project" : "projects"
+        }).`
+      );
+    } catch (error) {
+      setBackupError(
+        error instanceof SyntaxError
+          ? "The selected file is not valid JSON."
+          : error instanceof Error
+            ? error.message
+            : "The project backup could not be imported."
+      );
+    }
+  }
 
   /* Proyecto seleccionado, o undefined si no hay ninguno abierto. */
   const selectedProject = projects.find(
     (project) => project.id === selectedProjectId
   );
+  /* Catálogo base más categorías presentes, compartido por CSV y formulario manual. */
   const materialCategories = Array.from(
     new Set(
       [
         "Concrete",
         "Lumber",
         "Electrical",
+        "Drywall",
         ...projects.flatMap((project) =>
           project.materials
             .map((material) => material.category.trim())
@@ -404,6 +544,7 @@ export default function Home() {
 
   /* Crea un proyecto activo y abre su dashboard. */
   function createProject() {
+    /* Validación mínima del formulario; los demás campos son opcionales. */
     if (!projectName.trim()) {
       alert("Please enter a project name.");
       return;
@@ -454,6 +595,7 @@ export default function Home() {
 
   /* Añade materiales (CSV o manual) sin borrar los que ya existen. */
   function addProjectMaterials(materials: Material[]) {
+    /* La firma evita duplicados incluso si llegan en el mismo lote importado. */
     if (selectedProjectId === null) return;
 
     setProjects((currentProjects) =>
@@ -484,12 +626,14 @@ export default function Home() {
 
   /* Abre el detalle de un proyecto en el Dashboard. */
   function openProject(projectId: number) {
+    /* La selección y la vista se actualizan juntas para abrir el detalle correcto. */
     setSelectedProjectId(projectId);
     setActiveView("dashboard");
   }
 
   /* Cambia el estado del proyecto y registra la fecha de cierre. */
   function setProjectStatus(status: ProjectStatus) {
+    /* Completar conserva una fecha existente o registra la fecha actual. */
     if (selectedProjectId === null) return;
 
     setProjects((currentProjects) =>
@@ -509,6 +653,7 @@ export default function Home() {
   }
 
   function updateSelectedProject(updates: Partial<Project>) {
+    /* Actualización inmutable de cualquier colección del proyecto seleccionado. */
     if (selectedProjectId === null) return;
     setProjects((currentProjects) =>
       currentProjects.map((project) =>
@@ -519,6 +664,7 @@ export default function Home() {
 
   /* Borra un proyecto después de confirmar. */
   function deleteProject(projectId: number) {
+    /* La confirmación protege contra borrados accidentales y luego limpia selección. */
     const confirmed = window.confirm(
       "Are you sure you want to delete this project?"
     );
@@ -548,7 +694,7 @@ export default function Home() {
             SIDEBAR
         ====================================== */}
 
-        <aside className="w-full border-b border-[#292e37] bg-[#15181e] p-4 lg:min-h-screen lg:w-64 lg:border-b-0 lg:border-r lg:p-5">
+        <aside className="sticky top-0 z-30 w-full border-b border-[#292e37] bg-[#15181e] p-4 lg:h-screen lg:w-64 lg:self-start lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-5">
 
           {/* Logo */}
 
@@ -570,7 +716,7 @@ export default function Home() {
 
           {/* Navigation */}
 
-          <nav className="grid grid-cols-3 gap-2 text-sm lg:block lg:space-y-2">
+          <nav className="grid grid-cols-2 gap-2 text-sm lg:block lg:space-y-2">
 
             {/* Dashboard */}
 
@@ -579,7 +725,7 @@ export default function Home() {
                 setActiveView("dashboard");
                 setSelectedProjectId(null);
               }}
-              className={`w-full rounded-lg px-3 py-3 text-left transition ${
+              className={`w-full rounded-lg border border-transparent px-3 py-3 text-left transition hover:translate-x-1 hover:border-[#3a414d] ${
                 activeView === "dashboard"
                   ? "bg-[#252a32] text-white"
                   : "text-gray-400 hover:bg-[#20242c]"
@@ -592,26 +738,13 @@ export default function Home() {
 
             <button
               onClick={() => setActiveView("projects")}
-              className={`w-full rounded-lg px-3 py-3 text-left transition ${
+              className={`w-full rounded-lg border border-transparent px-3 py-3 text-left transition hover:translate-x-1 hover:border-[#3a414d] ${
                 activeView === "projects"
                   ? "bg-[#252a32] text-white"
                   : "text-gray-400 hover:bg-[#20242c]"
               }`}
             >
               ▣ Projects
-            </button>
-
-            {/* Cost Calculator */}
-
-            <button
-              onClick={() => setActiveView("calculator")}
-              className={`w-full rounded-lg px-3 py-3 text-left transition ${
-                activeView === "calculator"
-                  ? "bg-[#252a32] text-white"
-                  : "text-gray-400 hover:bg-[#20242c]"
-              }`}
-            >
-              ∑ Cost Calculator
             </button>
 
           </nav>
@@ -622,6 +755,14 @@ export default function Home() {
         ====================================== */}
 
         <section className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
+        {storageMessage && (
+          <div
+            role="alert"
+            className="mb-6 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200"
+          >
+            {storageMessage}
+          </div>
+        )}
 
           {/* ====================================
               PROJECTS SECTION
@@ -649,27 +790,11 @@ export default function Home() {
               createProject={createProject}
               openProject={openProject}
               deleteProject={deleteProject}
+              exportProjects={exportProjects}
+              importProjects={importProjects}
+              backupMessage={backupMessage}
+              backupError={backupError}
             />
-          )}
-
-          {/* ====================================
-              COST CALCULATOR
-          ==================================== */}
-
-          {activeView === "calculator" && (
-            <>
-              <header className="mb-8">
-                <h2 className="text-2xl font-bold sm:text-3xl">
-                  Cost Calculator
-                </h2>
-
-                <p className="mt-2 text-sm text-gray-400">
-                  Estimate material costs for your construction project.
-                </p>
-              </header>
-
-              <CostCalculator />
-            </>
           )}
 
           {/* ====================================
@@ -722,6 +847,7 @@ export default function Home() {
 */
 
 type DashboardHomeProps = {
+  /** Proyectos y callbacks que necesita la vista resumen. */
   projects: Project[];
   openProject: (id: number) => void;
   createProject: () => void;
@@ -732,6 +858,7 @@ function DashboardHome({
   openProject,
   createProject,
 }: DashboardHomeProps) {
+  /* Se separan activos y completados para mostrar operación y cierre por separado. */
   /* Separa activos y completados para mostrarlos distinto. */
   const activeProjects = projects.filter(
     (project) => project.status !== "completed"
@@ -915,6 +1042,7 @@ function DashboardHome({
 */
 
 type ProjectCardProps = {
+  /** Resumen navegable de un proyecto activo. */
   project: Project;
   onClick: () => void;
 };
@@ -1050,6 +1178,10 @@ function ProjectCard({
 */
 
 type ProjectsViewProps = {
+  /*
+    Props controladas del formulario y acciones de backup. Esta vista no posee
+    el estado global: lo recibe de Home y comunica eventos mediante callbacks.
+  */
   projects: Project[];
   projectName: string;
   projectType: string;
@@ -1070,6 +1202,10 @@ type ProjectsViewProps = {
   createProject: () => void;
   openProject: (id: number) => void;
   deleteProject: (id: number) => void;
+  exportProjects: () => void;
+  importProjects: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  backupMessage: string | null;
+  backupError: string | null;
 };
 
 function ProjectsView({
@@ -1093,7 +1229,12 @@ function ProjectsView({
   createProject,
   openProject,
   deleteProject,
+  exportProjects,
+  importProjects,
+  backupMessage,
+  backupError,
 }: ProjectsViewProps) {
+  /* Las dos listas alimentan secciones con acciones y métricas distintas. */
   const activeProjects = projects.filter(
     (project) => project.status !== "completed"
   );
@@ -1113,6 +1254,45 @@ function ProjectsView({
           Create and manage all construction projects.
         </p>
       </header>
+
+      <section className="mb-8 rounded-xl border border-[#292e37] bg-[#191d24] p-5 sm:p-6">
+        <div>
+          <h3 className="text-lg font-semibold">Project Data Backup</h3>
+          <p className="mt-1 text-sm text-gray-500">
+            Export all projects to JSON or replace your projects from a backup.
+          </p>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+          <button
+            type="button"
+            onClick={exportProjects}
+            className="rounded-lg border border-[#e5a82b] px-4 py-2 text-sm font-semibold text-[#f0b83d] transition hover:bg-[#e5a82b]/10"
+          >
+            Export Projects
+          </button>
+          <label className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-[#e5a82b] px-4 py-2 text-sm font-semibold text-black transition hover:bg-[#f0b83d]">
+            Import Projects
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={importProjects}
+              className="sr-only"
+            />
+          </label>
+        </div>
+
+        {backupMessage && (
+          <p className="mt-3 text-sm text-green-400" role="status">
+            {backupMessage}
+          </p>
+        )}
+        {backupError && (
+          <p className="mt-3 text-sm text-red-300" role="alert">
+            {backupError}
+          </p>
+        )}
+      </section>
 
       {/* CREATE PROJECT */}
       <div className="mb-8 rounded-xl border border-[#292e37] bg-[#191d24] p-5 sm:p-6">
@@ -1334,6 +1514,7 @@ function ProjectsView({
 */
 
 type ProjectDashboardProps = {
+  /** Proyecto abierto y operaciones de edición de sus datos anidados. */
   project: Project;
   categories: string[];
   onBack: () => void;
@@ -1352,6 +1533,7 @@ function ProjectDashboard({
   onUpdateProject,
   onDelete,
 }: ProjectDashboardProps) {
+  /* Todas las métricas se derivan durante el render para reflejar cambios al instante. */
   /* Costo invertido y cuánto presupuesto queda. */
   const invested = getProjectCost(project);
   const remaining = project.budget - invested;
@@ -1366,6 +1548,29 @@ function ProjectDashboard({
       ? project.tasks.reduce((total, task) => total + task.progress, 0) /
         project.tasks.length
       : 0;
+  const today = new Date().toISOString().slice(0, 10);
+  const openTaskCount = project.tasks.filter(
+    (task) => task.status !== "completed"
+  ).length;
+  const overdueTaskCount = project.tasks.filter(
+    (task) =>
+      task.status !== "completed" &&
+      Boolean(task.dueDate) &&
+      task.dueDate < today
+  ).length;
+  const openTasks = [...project.tasks]
+    .filter((task) => task.status !== "completed")
+    .sort((a, b) => {
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      return a.dueDate.localeCompare(b.dueDate);
+    });
+  const recentExpense = [...project.expenses].sort((a, b) =>
+    b.date.localeCompare(a.date)
+  )[0];
+  const latestDailyLog = [...project.dailyLogs].sort((a, b) =>
+    b.date.localeCompare(a.date)
+  )[0];
 
   return (
     <>
@@ -1414,22 +1619,31 @@ function ProjectDashboard({
 
         <div className="flex flex-wrap gap-2">
 
-          <select
-            value={project.status}
-            onChange={(event) =>
-              onStatusChange(event.target.value as ProjectStatus)
-            }
-            className="rounded-lg border border-[#292e37] bg-[#15181e] px-3 py-2 text-sm text-white outline-none focus:border-[#e5a82b]"
-            aria-label="Project status"
-          >
-            <option value="active">Active</option>
-            <option value="paused">Paused</option>
-            <option value="completed">Completed</option>
-          </select>
+          {!isCompleted && (
+            <>
+              <button
+                type="button"
+                onClick={() => onStatusChange("completed")}
+                className="rounded-lg border border-green-500/40 bg-green-500/10 px-4 py-2 text-sm font-medium text-green-400 hover:bg-green-500/20"
+              >
+                Complete
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onStatusChange(project.status === "paused" ? "active" : "paused")
+                }
+                className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-4 py-2 text-sm font-medium text-yellow-300 hover:bg-yellow-500/20"
+              >
+                {project.status === "paused" ? "Resume" : "Pause"}
+              </button>
+            </>
+          )}
 
           <button
+            type="button"
             onClick={onDelete}
-            className="rounded-lg border border-red-500/30 px-4 py-2 text-sm text-red-400 hover:bg-red-500/10"
+            className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/20"
           >
             Delete
           </button>
@@ -1479,23 +1693,102 @@ function ProjectDashboard({
 
       </div>
 
-      {/* ======================================
-          IMPORT MATERIALS
-      ====================================== */}
-
-      {!isCompleted && (
-        <div className="mb-6 space-y-4">
-          <CsvUploader
-            onMaterialsLoaded={onMaterialsLoaded}
-            existingMaterials={project.materials}
-          />
-
-          <ManualMaterialForm
-            categories={categories}
-            onAdd={(material) => onMaterialsLoaded([material])}
-          />
+      <section className="mt-8 mb-24 border-b border-[#292e37] pb-12">
+        <div className="mb-4">
+          <h3 className="text-lg font-semibold">Project Workspace</h3>
+          <p className="mt-1 text-sm text-gray-500">
+            Open the area you need to manage next.
+          </p>
         </div>
-      )}
+        <div className="grid gap-5 md:grid-cols-3">
+          <a href="#project-tasks" className="group min-h-[300px] rounded-2xl border border-[#4a3b1c] border-t-4 border-t-[#e5a82b] bg-[#20242c] p-7 transition duration-200 hover:-translate-y-2 hover:scale-[1.01] hover:border-[#e5a82b] hover:bg-[#252a32]">
+            <div className="flex items-start justify-between">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#f0b83d]">Workspace</p>
+              <span className="text-xl text-[#e5a82b] transition-transform group-hover:translate-x-1">→</span>
+            </div>
+            <p className="mt-5 text-lg font-semibold">Tasks</p>
+            <p className="mt-2 text-4xl font-bold">{project.tasks.length}</p>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full bg-[#15181e] px-2.5 py-1 text-gray-300">
+                {openTaskCount} open
+              </span>
+              {overdueTaskCount > 0 && (
+                <span className="rounded-full bg-red-500/10 px-2.5 py-1 text-red-300">
+                  {overdueTaskCount} overdue
+                </span>
+              )}
+            </div>
+            <div className="mt-5 space-y-2 border-t border-[#3a414d] pt-4">
+              {openTasks.length === 0 ? (
+                <p className="text-sm text-green-400">All tasks completed</p>
+              ) : (
+                openTasks.slice(0, 3).map((task) => {
+                  const isOverdue =
+                    Boolean(task.dueDate) && task.dueDate < today;
+                  return (
+                    <div key={task.id} className="rounded-lg bg-[#15181e] px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm text-gray-200">
+                          {task.title}
+                        </span>
+                        <span className="shrink-0 text-xs text-gray-500">
+                          {task.progress}%
+                        </span>
+                      </div>
+                      <p className={`mt-1 text-xs ${isOverdue ? "text-red-300" : "text-gray-500"}`}>
+                        {isOverdue ? "Overdue" : "Due"} {task.dueDate || "not set"} · {task.status.replace("_", " ")}
+                      </p>
+                    </div>
+                  );
+                })
+              )}
+              {openTasks.length > 3 && (
+                <p className="text-xs text-gray-500">
+                  +{openTasks.length - 3} more open tasks
+                </p>
+              )}
+            </div>
+          </a>
+          <a href="#project-labor" className="group min-h-[300px] rounded-2xl border border-[#4a3b1c] border-t-4 border-t-[#e5a82b] bg-[#20242c] p-7 transition duration-200 hover:-translate-y-2 hover:scale-[1.01] hover:border-[#e5a82b] hover:bg-[#252a32]">
+            <div className="flex items-start justify-between">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#f0b83d]">Workspace</p>
+              <span className="text-xl text-[#e5a82b] transition-transform group-hover:translate-x-1">→</span>
+            </div>
+            <p className="mt-5 text-lg font-semibold">Labor & Expenses</p>
+            <p className="mt-2 text-4xl font-bold">{formatMoney(getExpenseCost(project.expenses))}</p>
+            <div className="mt-5 border-t border-[#3a414d] pt-4">
+              <p className="text-xs uppercase tracking-wide text-gray-500">Latest entry</p>
+              <p className="mt-2 truncate text-sm text-gray-200">
+                {recentExpense?.description || "No expenses recorded"}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                {recentExpense
+                  ? `${recentExpense.category} · ${formatMoney(recentExpense.amount)} · ${recentExpense.date || "no date"}`
+                  : "Add labor, subcontractor, equipment, or other costs"}
+              </p>
+            </div>
+          </a>
+          <a href="#project-daily-logs" className="group min-h-[300px] rounded-2xl border border-[#4a3b1c] border-t-4 border-t-[#e5a82b] bg-[#20242c] p-7 transition duration-200 hover:-translate-y-2 hover:scale-[1.01] hover:border-[#e5a82b] hover:bg-[#252a32]">
+            <div className="flex items-start justify-between">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#f0b83d]">Workspace</p>
+              <span className="text-xl text-[#e5a82b] transition-transform group-hover:translate-x-1">→</span>
+            </div>
+            <p className="mt-5 text-lg font-semibold">Daily Logs</p>
+            <p className="mt-2 text-4xl font-bold">{project.dailyLogs.length}</p>
+            <div className="mt-5 border-t border-[#3a414d] pt-4">
+              <p className="text-xs uppercase tracking-wide text-gray-500">Latest log</p>
+              <p className="mt-2 truncate text-sm text-gray-200">
+                {latestDailyLog?.title || "No daily logs recorded"}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                {latestDailyLog
+                  ? `${latestDailyLog.date || "No date"} · ${latestDailyLog.workers} workers`
+                  : "Add site activity, weather, workers, and notes"}
+              </p>
+            </div>
+          </a>
+        </div>
+      </section>
 
       {/* ======================================
           PROJECT SUMMARY
@@ -1554,6 +1847,8 @@ function ProjectDashboard({
         />
       )}
 
+      <SchedulePanel project={project} />
+
       {/* ======================================
           PROJECT CHARTS
       ====================================== */}
@@ -1571,6 +1866,37 @@ function ProjectDashboard({
 
       </div>
 
+      <div id="project-tasks">
+        <TasksPanel project={project} onUpdateProject={onUpdateProject} />
+      </div>
+      <div id="project-labor">
+        <ExpensesPanel project={project} onUpdateProject={onUpdateProject} />
+      </div>
+      <div id="project-daily-logs">
+        <DailyLogsPanel project={project} onUpdateProject={onUpdateProject} />
+      </div>
+
+      {!isCompleted && (
+        <section id="project-materials" className="mt-8 space-y-4">
+          <div>
+            <h3 className="text-lg font-semibold">Materials</h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Import materials or select recommended items for this project type.
+            </p>
+          </div>
+          <CsvUploader
+            onMaterialsLoaded={onMaterialsLoaded}
+            existingMaterials={project.materials}
+          />
+          <ManualMaterialForm
+            categories={categories}
+            existingMaterials={project.materials}
+            projectType={project.type}
+            onAdd={onMaterialsLoaded}
+          />
+        </section>
+      )}
+
       {/* ======================================
           MATERIAL TABLE
       ====================================== */}
@@ -1580,10 +1906,6 @@ function ProjectDashboard({
         categories={categories}
         onUpdate={(materials) => onUpdateProject({ materials })}
       />
-
-      <TasksPanel project={project} onUpdateProject={onUpdateProject} />
-      <ExpensesPanel project={project} onUpdateProject={onUpdateProject} />
-      <DailyLogsPanel project={project} onUpdateProject={onUpdateProject} />
 
     </>
   );
@@ -1602,11 +1924,134 @@ const inputClass =
   "rounded-lg border border-[#292e37] bg-[#15181e] px-3 py-2 text-sm text-white outline-none focus:border-[#e5a82b]";
 
 type ProjectDataPanelProps = {
+  /** Contrato común de los paneles de tareas, gastos y bitácora diaria. */
   project: Project;
   onUpdateProject: (updates: Partial<Project>) => void;
 };
 
+function SchedulePanel({ project }: { project: Project }) {
+  /* Vista de fechas y estado; es deliberadamente de solo lectura. */
+  const [filter, setFilter] = useState<"all" | TaskStatus>("all");
+  const today = new Date().toISOString().slice(0, 10);
+  const overdueCount = project.tasks.filter(
+    (task) =>
+      task.status !== "completed" &&
+      Boolean(task.dueDate) &&
+      task.dueDate < today
+  ).length;
+  const upcomingCount = project.tasks.filter(
+    (task) =>
+      task.status !== "completed" &&
+      (!task.dueDate || task.dueDate >= today)
+  ).length;
+  const completedCount = project.tasks.filter(
+    (task) => task.status === "completed"
+  ).length;
+  const scheduleTasks = [...project.tasks]
+    .filter((task) => filter === "all" || task.status === filter)
+    .sort((a, b) => {
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      return a.dueDate.localeCompare(b.dueDate);
+    });
+
+  return (
+    <section className="mt-14 mb-8 rounded-xl border border-[#292e37] bg-[#191d24] p-5 transition-colors duration-200 hover:border-[#3a414d]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">Project Schedule</h3>
+          <p className="mt-1 text-sm text-gray-500">
+            Review deadlines and work status before opening the full task editor.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full bg-red-500/10 px-3 py-1 text-red-300">
+            {overdueCount} overdue
+          </span>
+          <span className="rounded-full bg-[#252a32] px-3 py-1 text-gray-300">
+            {upcomingCount} upcoming
+          </span>
+          <span className="rounded-full bg-green-500/10 px-3 py-1 text-green-300">
+            {completedCount} completed
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        {(["all", "pending", "in_progress", "completed"] as const).map(
+          (status) => (
+            <button
+              key={status}
+              type="button"
+              onClick={() => setFilter(status)}
+              className={`rounded-lg border px-3 py-2 text-xs transition-colors duration-200 ${
+                filter === status
+                  ? "border-[#e5a82b] bg-[#e5a82b] font-semibold text-black"
+                  : "border-[#3a414d] text-gray-400 hover:border-[#e5a82b] hover:text-white"
+              }`}
+            >
+              {status === "all"
+                ? "All tasks"
+                : status === "in_progress"
+                  ? "In progress"
+                  : status[0].toUpperCase() + status.slice(1)}
+            </button>
+          )
+        )}
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {scheduleTasks.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-[#292e37] p-4 text-center text-sm text-gray-500">
+            No tasks match this filter.
+          </p>
+        ) : (
+          scheduleTasks.map((task) => {
+            const isOverdue =
+              task.status !== "completed" &&
+              Boolean(task.dueDate) &&
+              task.dueDate < today;
+            return (
+              <div
+                key={task.id}
+                className={`grid gap-3 rounded-lg border bg-[#15181e] p-3 transition-colors duration-200 hover:border-[#4a5563] md:grid-cols-[1.5fr_1fr_0.8fr_0.8fr] md:items-center ${
+                  isOverdue ? "border-red-500/50 hover:border-red-400/70" : "border-[#292e37]"
+                }`}
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{task.title}</p>
+                  {task.description && (
+                    <p className="mt-1 truncate text-xs text-gray-500">
+                      {task.description}
+                    </p>
+                  )}
+                </div>
+                <p className={`text-xs ${isOverdue ? "text-red-300" : "text-gray-400"}`}>
+                  {isOverdue ? "Overdue" : "Due"} {task.dueDate || "not set"}
+                </p>
+                <p className="text-xs capitalize text-gray-400">
+                  {task.status.replace("_", " ")}
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#292e37]">
+                    <div
+                      className="h-full rounded-full bg-[#e5a82b]"
+                      style={{ width: `${task.progress}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-400">{task.progress}%</span>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </section>
+  );
+}
+
 function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
+  /* El borrador vive localmente; solo se confirma en onUpdateProject al guardar. */
   const emptyTask = {
     title: "",
     description: "",
@@ -1616,6 +2061,23 @@ function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
   };
   const [draft, setDraft] = useState(emptyTask);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const today = new Date().toISOString().slice(0, 10);
+  const overdueTasks = project.tasks.filter(
+    (task) =>
+      task.status !== "completed" &&
+      Boolean(task.dueDate) &&
+      task.dueDate < today
+  );
+  const openTasks = project.tasks.filter((task) => task.status !== "completed");
+  const orderedTasks = [...project.tasks].sort((a, b) => {
+    const aOverdue = overdueTasks.some((task) => task.id === a.id);
+    const bOverdue = overdueTasks.some((task) => task.id === b.id);
+    if (aOverdue !== bOverdue) return Number(bOverdue) - Number(aOverdue);
+    if (!a.dueDate) return 1;
+    if (!b.dueDate) return -1;
+    return a.dueDate.localeCompare(b.dueDate);
+  });
 
   function saveTask(event: React.FormEvent) {
     event.preventDefault();
@@ -1634,10 +2096,12 @@ function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
     onUpdateProject({ tasks });
     setDraft(emptyTask);
     setEditingId(null);
+    setIsFormOpen(false);
   }
 
   function editTask(task: Task) {
     setEditingId(task.id);
+    setIsFormOpen(true);
     setDraft({
       title: task.title,
       description: task.description,
@@ -1654,11 +2118,26 @@ function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
           <h3 className="text-lg font-semibold">Tasks</h3>
           <p className="mt-1 text-sm text-gray-500">Plan work, deadlines, and completion progress.</p>
         </div>
-        <span className="rounded-full bg-[#252a32] px-3 py-1 text-xs text-gray-400">
-          {project.tasks.length}
-        </span>
+        <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+          <span className="rounded-full bg-[#252a32] px-3 py-1 text-gray-400">{openTasks.length} open</span>
+          {overdueTasks.length > 0 && <span className="rounded-full bg-red-500/10 px-3 py-1 text-red-300">{overdueTasks.length} overdue</span>}
+          <button type="button" onClick={() => { setEditingId(null); setDraft(emptyTask); setIsFormOpen(true); }} className="rounded-lg bg-[#e5a82b] px-3 py-2 font-semibold text-black hover:bg-[#f0b83d]">+ Add task</button>
+        </div>
       </div>
-      <form onSubmit={saveTask} className="grid gap-3 md:grid-cols-2">
+      {isFormOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="task-form-title">
+          <form onSubmit={saveTask} className="w-full max-w-2xl rounded-2xl border border-[#3a414d] bg-[#191d24] p-6">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h4 id="task-form-title" className="text-lg font-semibold">
+                  {editingId ? "Edit Task" : "Add Task"}
+                </h4>
+                <p className="mt-1 text-sm text-gray-500">
+                  Add the work, deadline, status, and current progress.
+                </p>
+              </div>
+              <button type="button" aria-label="Close task form" onClick={() => { setIsFormOpen(false); setEditingId(null); setDraft(emptyTask); }} className="rounded-lg border border-[#292e37] px-3 py-1 text-lg text-gray-400 hover:text-white">×</button>
+            </div>
         <input className={inputClass} placeholder="Task title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
         <input className={inputClass} type="date" aria-label="Task due date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} />
         <input className={inputClass} placeholder="Description" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
@@ -1674,17 +2153,27 @@ function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
           <button type="submit" className="rounded-lg bg-[#e5a82b] px-4 py-2 text-sm font-semibold text-black">
             {editingId ? "Save Task" : "Add Task"}
           </button>
-          {editingId ? <button type="button" onClick={() => { setEditingId(null); setDraft(emptyTask); }} className="rounded-lg border border-[#292e37] px-4 py-2 text-sm">Cancel</button> : null}
+          <button type="button" onClick={() => { setIsFormOpen(false); setEditingId(null); setDraft(emptyTask); }} className="rounded-lg border border-[#292e37] px-4 py-2 text-sm">Cancel</button>
         </div>
-      </form>
+          </form>
+        </div>
+      )}
       <div className="mt-5 space-y-3">
-        {project.tasks.length === 0 ? <p className="rounded-lg border border-dashed border-[#292e37] p-5 text-center text-sm text-gray-500">No tasks yet.</p> : project.tasks.map((task) => (
-          <div key={task.id} className="rounded-lg border border-[#292e37] bg-[#15181e] p-4">
+        {project.tasks.length === 0 ? <div className="rounded-lg border border-dashed border-[#292e37] p-5 text-center"><p className="text-sm text-gray-500">No tasks have been added.</p><button type="button" onClick={() => setIsFormOpen(true)} className="mt-3 inline-flex rounded-lg border border-[#e5a82b] px-3 py-2 text-xs font-semibold text-[#f0b83d] hover:bg-[#e5a82b]/10">+ Add your first task</button></div> : orderedTasks.map((task) => {
+          const isOverdue =
+            task.status !== "completed" &&
+            Boolean(task.dueDate) &&
+            task.dueDate < today;
+          return (
+          <div key={task.id} className={`rounded-lg border bg-[#15181e] p-4 ${isOverdue ? "border-red-500/50" : "border-[#292e37]"}`}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <h4 className="font-medium">{task.title}</h4>
                 {task.description ? <p className="mt-1 text-sm text-gray-400">{task.description}</p> : null}
-                <p className="mt-2 text-xs text-gray-500">Due {task.dueDate || "not set"} · {task.status.replace("_", " ")}</p>
+                <p className={`mt-2 text-xs ${isOverdue ? "text-red-300" : "text-gray-500"}`}>
+                  {isOverdue ? "Overdue · " : "Due "}
+                  {task.dueDate || "not set"} · {task.status.replace("_", " ")}
+                </p>
               </div>
               <div className="flex gap-2">
                 <button type="button" onClick={() => editTask(task)} className="rounded border border-[#292e37] px-3 py-1 text-xs hover:bg-[#252a32]">Edit</button>
@@ -1696,13 +2185,15 @@ function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
               <span className="text-xs text-gray-400">{task.progress}%</span>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
 }
 
 function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
+  /* Registra gastos no materiales y los incorpora al coste total del proyecto. */
   const emptyExpense = {
     description: "",
     category: "materials" as ExpenseCategory,
@@ -1712,6 +2203,7 @@ function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
   };
   const [draft, setDraft] = useState(emptyExpense);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [isFormOpen, setIsFormOpen] = useState(false);
   const expenseTotal = getMaterialCost(project.materials) + getExpenseCost(project.expenses);
 
   function saveExpense(event: React.FormEvent) {
@@ -1732,10 +2224,12 @@ function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
     onUpdateProject({ expenses });
     setDraft(emptyExpense);
     setEditingId(null);
+    setIsFormOpen(false);
   }
 
   function editExpense(expense: Expense) {
     setEditingId(expense.id);
+    setIsFormOpen(true);
     setDraft({ description: expense.description, category: expense.category, amount: String(expense.amount), date: expense.date, notes: expense.notes });
   }
 
@@ -1746,9 +2240,23 @@ function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
           <h3 className="text-lg font-semibold">Expenses</h3>
           <p className="mt-1 text-sm text-gray-500">Materials, labor, subcontractors, equipment, permits, and other costs.</p>
         </div>
-        <p className="text-lg font-semibold text-[#e5a82b]">{formatMoney(expenseTotal)}</p>
+        <div className="flex items-center gap-3">
+          <p className="text-lg font-semibold text-[#e5a82b]">{formatMoney(expenseTotal)}</p>
+          <button type="button" onClick={() => { setEditingId(null); setDraft(emptyExpense); setIsFormOpen(true); }} className="rounded-lg bg-[#e5a82b] px-3 py-2 text-xs font-semibold text-black hover:bg-[#f0b83d]">+ Add expense</button>
+        </div>
       </div>
-      <form onSubmit={saveExpense} className="grid gap-3 md:grid-cols-2">
+      {isFormOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="expense-form-title">
+          <form onSubmit={saveExpense} className="w-full max-w-2xl rounded-2xl border border-[#3a414d] bg-[#191d24] p-6">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h4 id="expense-form-title" className="text-lg font-semibold">
+                  {editingId ? "Edit Expense" : "Add Expense"}
+                </h4>
+                <p className="mt-1 text-sm text-gray-500">Record labor, materials, subcontractors, or another project cost.</p>
+              </div>
+              <button type="button" aria-label="Close expense form" onClick={() => { setIsFormOpen(false); setEditingId(null); setDraft(emptyExpense); }} className="rounded-lg border border-[#292e37] px-3 py-1 text-lg text-gray-400 hover:text-white">×</button>
+            </div>
         <input className={inputClass} placeholder="Expense description" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
         <div className="flex gap-3">
           <select className={`${inputClass} min-w-0 flex-1`} value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as ExpenseCategory })}>
@@ -1760,11 +2268,13 @@ function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
         <input className={inputClass} placeholder="Notes (optional)" value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} />
         <div className="flex gap-2 md:col-span-2">
           <button type="submit" className="rounded-lg bg-[#e5a82b] px-4 py-2 text-sm font-semibold text-black">{editingId ? "Save Expense" : "Add Expense"}</button>
-          {editingId ? <button type="button" onClick={() => { setEditingId(null); setDraft(emptyExpense); }} className="rounded-lg border border-[#292e37] px-4 py-2 text-sm">Cancel</button> : null}
+          <button type="button" onClick={() => { setIsFormOpen(false); setEditingId(null); setDraft(emptyExpense); }} className="rounded-lg border border-[#292e37] px-4 py-2 text-sm">Cancel</button>
         </div>
-      </form>
+          </form>
+        </div>
+      )}
       <div className="mt-5 overflow-x-auto">
-        {project.expenses.length === 0 ? <p className="rounded-lg border border-dashed border-[#292e37] p-5 text-center text-sm text-gray-500">No additional expenses yet. Imported materials are included in the total.</p> : (
+        {project.expenses.length === 0 ? <div className="rounded-lg border border-dashed border-[#292e37] p-5 text-center"><p className="text-sm text-gray-500">No labor or additional expenses have been added.</p><button type="button" onClick={() => setIsFormOpen(true)} className="mt-3 inline-flex rounded-lg border border-[#e5a82b] px-3 py-2 text-xs font-semibold text-[#f0b83d] hover:bg-[#e5a82b]/10">+ Add first expense</button></div> : (
           <table className="w-full min-w-[620px] text-left text-sm">
             <thead className="border-b border-[#292e37] text-xs uppercase text-gray-500"><tr><th className="px-3 py-3">Description</th><th className="px-3 py-3">Category</th><th className="px-3 py-3">Date</th><th className="px-3 py-3">Amount</th><th className="px-3 py-3">Actions</th></tr></thead>
             <tbody>{project.expenses.map((expense) => <tr key={expense.id} className="border-b border-[#292e37] last:border-0"><td className="px-3 py-3">{expense.description}</td><td className="px-3 py-3 text-gray-400">{expense.category}</td><td className="px-3 py-3 text-gray-400">{expense.date || "—"}</td><td className="px-3 py-3 font-semibold text-[#e5a82b]">{formatMoney(expense.amount)}</td><td className="px-3 py-3"><div className="flex gap-2"><button type="button" onClick={() => editExpense(expense)} className="rounded border border-[#292e37] px-2 py-1 text-xs">Edit</button><button type="button" onClick={() => onUpdateProject({ expenses: project.expenses.filter((item) => item.id !== expense.id) })} className="rounded border border-red-500/30 px-2 py-1 text-xs text-red-400">Delete</button></div></td></tr>)}</tbody>
@@ -1776,6 +2286,7 @@ function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
 }
 
 function DailyLogsPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
+  /* Bitácora cronológica del sitio, persistida junto al proyecto padre. */
   const emptyLog = {
     date: new Date().toISOString().slice(0, 10),
     title: "",
@@ -1785,6 +2296,7 @@ function DailyLogsPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
   };
   const [draft, setDraft] = useState(emptyLog);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [isFormOpen, setIsFormOpen] = useState(false);
 
   function saveLog(event: React.FormEvent) {
     event.preventDefault();
@@ -1803,20 +2315,36 @@ function DailyLogsPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
     onUpdateProject({ dailyLogs });
     setDraft(emptyLog);
     setEditingId(null);
+    setIsFormOpen(false);
   }
 
   function editLog(log: DailyLog) {
     setEditingId(log.id);
+    setIsFormOpen(true);
     setDraft({ date: log.date, title: log.title, notes: log.notes, weather: log.weather, workers: String(log.workers) });
   }
 
   return (
     <section className="mt-8 rounded-xl border border-[#292e37] bg-[#191d24] p-5">
-      <div className="mb-5">
-        <h3 className="text-lg font-semibold">Daily Logs</h3>
-        <p className="mt-1 text-sm text-gray-500">Record site activity, conditions, and crew size.</p>
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-semibold">Daily Logs</h3>
+          <p className="mt-1 text-sm text-gray-500">Record site activity, conditions, and crew size.</p>
+        </div>
+        <button type="button" onClick={() => { setEditingId(null); setDraft(emptyLog); setIsFormOpen(true); }} className="rounded-lg bg-[#e5a82b] px-3 py-2 text-xs font-semibold text-black hover:bg-[#f0b83d]">+ Add daily log</button>
       </div>
-      <form onSubmit={saveLog} className="grid gap-3 md:grid-cols-2">
+      {isFormOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="daily-log-form-title">
+          <form onSubmit={saveLog} className="w-full max-w-2xl rounded-2xl border border-[#3a414d] bg-[#191d24] p-6">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h4 id="daily-log-form-title" className="text-lg font-semibold">
+                  {editingId ? "Edit Daily Log" : "Add Daily Log"}
+                </h4>
+                <p className="mt-1 text-sm text-gray-500">Capture site activity, conditions, and crew size.</p>
+              </div>
+              <button type="button" aria-label="Close daily log form" onClick={() => { setIsFormOpen(false); setEditingId(null); setDraft(emptyLog); }} className="rounded-lg border border-[#292e37] px-3 py-1 text-lg text-gray-400 hover:text-white">×</button>
+            </div>
         <input className={inputClass} type="date" aria-label="Log date" value={draft.date} onChange={(event) => setDraft({ ...draft, date: event.target.value })} />
         <input className={inputClass} placeholder="Log title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
         <input className={inputClass} placeholder="Weather" value={draft.weather} onChange={(event) => setDraft({ ...draft, weather: event.target.value })} />
@@ -1824,11 +2352,13 @@ function DailyLogsPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
         <textarea className={`${inputClass} min-h-20 md:col-span-2`} placeholder="Notes" value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} />
         <div className="flex gap-2 md:col-span-2">
           <button type="submit" className="rounded-lg bg-[#e5a82b] px-4 py-2 text-sm font-semibold text-black">{editingId ? "Save Log" : "Add Log"}</button>
-          {editingId ? <button type="button" onClick={() => { setEditingId(null); setDraft(emptyLog); }} className="rounded-lg border border-[#292e37] px-4 py-2 text-sm">Cancel</button> : null}
+          <button type="button" onClick={() => { setIsFormOpen(false); setEditingId(null); setDraft(emptyLog); }} className="rounded-lg border border-[#292e37] px-4 py-2 text-sm">Cancel</button>
         </div>
-      </form>
+          </form>
+        </div>
+      )}
       <div className="mt-5 space-y-3">
-        {project.dailyLogs.length === 0 ? <p className="rounded-lg border border-dashed border-[#292e37] p-5 text-center text-sm text-gray-500">No daily logs yet.</p> : project.dailyLogs.map((log) => <article key={log.id} className="rounded-lg border border-[#292e37] bg-[#15181e] p-4"><div className="flex flex-col gap-3 sm:flex-row sm:justify-between"><div><h4 className="font-medium">{log.title}</h4><p className="mt-1 text-xs text-gray-500">{log.date} · {log.weather || "Weather not recorded"} · {log.workers} workers</p>{log.notes ? <p className="mt-2 whitespace-pre-wrap text-sm text-gray-300">{log.notes}</p> : null}</div><div className="flex gap-2"><button type="button" onClick={() => editLog(log)} className="rounded border border-[#292e37] px-3 py-1 text-xs">Edit</button><button type="button" onClick={() => onUpdateProject({ dailyLogs: project.dailyLogs.filter((item) => item.id !== log.id) })} className="rounded border border-red-500/30 px-3 py-1 text-xs text-red-400">Delete</button></div></div></article>)}
+        {project.dailyLogs.length === 0 ? <div className="rounded-lg border border-dashed border-[#292e37] p-5 text-center"><p className="text-sm text-gray-500">No daily activity has been recorded.</p><button type="button" onClick={() => setIsFormOpen(true)} className="mt-3 inline-flex rounded-lg border border-[#e5a82b] px-3 py-2 text-xs font-semibold text-[#f0b83d] hover:bg-[#e5a82b]/10">+ Add first daily log</button></div> : project.dailyLogs.map((log) => <article key={log.id} className="rounded-lg border border-[#292e37] bg-[#15181e] p-4"><div className="flex flex-col gap-3 sm:flex-row sm:justify-between"><div><h4 className="font-medium">{log.title}</h4><p className="mt-1 text-xs text-gray-500">{log.date} · {log.weather || "Weather not recorded"} · {log.workers} workers</p>{log.notes ? <p className="mt-2 whitespace-pre-wrap text-sm text-gray-300">{log.notes}</p> : null}</div><div className="flex gap-2"><button type="button" onClick={() => editLog(log)} className="rounded border border-[#292e37] px-3 py-1 text-xs">Edit</button><button type="button" onClick={() => onUpdateProject({ dailyLogs: project.dailyLogs.filter((item) => item.id !== log.id) })} className="rounded border border-red-500/30 px-3 py-1 text-xs text-red-400">Delete</button></div></div></article>)}
       </div>
     </section>
   );
@@ -1852,6 +2382,7 @@ function StatInfoButton({
   label,
   text,
 }: {
+  /** Texto contextual mostrado en un tooltip accesible al pasar o enfocar. */
   label: string;
   text: string;
 }) {
@@ -1929,6 +2460,7 @@ function DashboardCard({
   valueClassName = "",
   info,
 }: DashboardCardProps) {
+  /* Tarjeta reutilizable para una cifra y su etiqueta en el resumen financiero. */
   return (
     <div className="relative rounded-xl border border-[#292e37] bg-[#191d24] p-5">
 
@@ -1965,6 +2497,7 @@ function CompletedProjectStats({
   project,
   closeout,
 }: CompletedProjectStatsProps) {
+  /* Desglose de cierre: rentabilidad, consumo del presupuesto y categorías. */
   const resultLabel = closeout.isOverBudget
     ? "Cost overrun"
     : closeout.profit === 0

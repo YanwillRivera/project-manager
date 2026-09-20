@@ -27,6 +27,7 @@ type CsvUploaderProps = {
 };
 
 const REQUIRED_COLUMNS = [
+  /* El encabezado se normaliza antes de compararlo para tolerar espacios y BOM. */
   "material",
   "category",
   "unit",
@@ -58,6 +59,7 @@ export default function CsvUploader({
   onMaterialsLoaded,
   existingMaterials,
 }: CsvUploaderProps) {
+  /* Estado de feedback de archivo; los materiales definitivos viven en Home. */
   const [fileName, setFileName] = useState("");
   const [isImported, setIsImported] = useState(false);
   const [importedCount, setImportedCount] = useState(0);
@@ -77,6 +79,7 @@ export default function CsvUploader({
     setErrors([]);
 
     Papa.parse<Record<string, string | string[]>>(file, {
+      /* Papa Parse conserva encabezados para validar y mapear columnas por nombre. */
       header: true,
       skipEmptyLines: true,
 
@@ -86,6 +89,7 @@ export default function CsvUploader({
           message: error.message,
         }));
         const fields = results.meta.fields ?? [];
+        /* El mapa permite aceptar encabezados con mayúsculas, espacios o BOM. */
         const columnNames = new Map(
           fields.map((field) => [normalizeText(field.replace(/^\uFEFF/, "")), field])
         );
@@ -110,6 +114,7 @@ export default function CsvUploader({
         const validMaterials: Material[] = [];
 
         results.data.forEach((row, index) => {
+          /* Cada fila se valida de forma independiente para importar las válidas. */
           const rowNumber = index + 2;
           const valueFor = (column: (typeof REQUIRED_COLUMNS)[number]) =>
             row[columnNames.get(column) ?? ""];

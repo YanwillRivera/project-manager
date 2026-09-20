@@ -17,12 +17,14 @@ import {
 import { Material } from "./CsvUploader";
 
 type MaterialCostChartProps = {
+  /** Filas actuales del proyecto; cada barra representa cantidad × precio unitario. */
   materials: Material[];
 };
 
 export default function MaterialCostChart({
   materials,
 }: MaterialCostChartProps) {
+  /* Recharts recibe una colección derivada, no modifica los materiales originales. */
   const data = materials.map((material) => ({
     name: material.material,
     cost: material.quantity * material.unit_price,
@@ -38,6 +40,7 @@ export default function MaterialCostChart({
         </p>
       </div>
 
+      {/* El contenedor con altura explícita permite que ResponsiveContainer calcule su tamaño. */}
       <div className="h-[350px]">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
