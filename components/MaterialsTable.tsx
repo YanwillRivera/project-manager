@@ -21,6 +21,11 @@ export default function MaterialsTable({
   categories,
   onUpdate,
 }: MaterialsTableProps) {
+  /*
+    Tabla editable con una sola fila en modo edición. El índice y el borrador
+    son efímeros; cada guardado o borrado devuelve la colección completa al
+    padre para que este persista el cambio.
+  */
   /* Estado transitorio del editor inline: índice y copia modificable de la fila. */
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<Material | null>(null);

@@ -57,6 +57,11 @@ export default function ManualMaterialForm({
   existingMaterials,
   projectType,
 }: ManualMaterialFormProps) {
+  /*
+    Selector controlado de materiales recomendados. Mantiene selecciones y
+    borradores locales hasta que todas las filas pasan la validación y se
+    entregan juntas mediante onAdd.
+  */
   /* Selección múltiple y borradores por nombre permiten preparar varias filas. */
   const [selectedNames, setSelectedNames] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, MaterialDraft>>({});
@@ -139,6 +144,7 @@ export default function ManualMaterialForm({
   }
 
   function addMaterial() {
+    /* Valida todas las filas antes de insertar para evitar lotes parciales. */
     if (selectedNames.length === 0) {
       alert("Select at least one material.");
       return;

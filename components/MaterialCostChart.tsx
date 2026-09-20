@@ -24,6 +24,10 @@ type MaterialCostChartProps = {
 export default function MaterialCostChart({
   materials,
 }: MaterialCostChartProps) {
+  /*
+    Proyecta cada material a una barra cuyo coste es cantidad por precio
+    unitario; la lista derivada se vuelve a calcular cuando cambian las props.
+  */
   /* Recharts recibe una colección derivada, no modifica los materiales originales. */
   const data = materials.map((material) => ({
     name: material.material,

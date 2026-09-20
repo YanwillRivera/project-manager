@@ -31,6 +31,7 @@ body {
   /* La interfaz utiliza su propia paleta oscura en el contenido de la app. */
   background: var(--background);
   color: var(--foreground);
+  /* Fuente de respaldo para texto que no use una utilidad de Tailwind. */
   font-family: Arial, Helvetica, sans-serif;
 }
 

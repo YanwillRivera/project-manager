@@ -804,10 +804,7 @@ export default function Home() {
           {activeView === "dashboard" && (
             <>
               {selectedProject ? (
-                /*
-                  If a project is selected,
-                  show its complete dashboard.
-                */
+                /* Con proyecto seleccionado se muestra su dashboard completo. */
                 <ProjectDashboard
                   project={selectedProject}
                   categories={materialCategories}
@@ -820,10 +817,7 @@ export default function Home() {
                   }
                 />
               ) : (
-                /*
-                  Otherwise show the main Dashboard
-                  with active and completed projects.
-                */
+                /* Sin selección se muestra el resumen general de proyectos. */
                 <DashboardHome
                   projects={projects}
                   openProject={openProject}
@@ -1051,6 +1045,11 @@ function ProjectCard({
   project,
   onClick,
 }: ProjectCardProps) {
+  /*
+    Tarjeta compacta para proyectos abiertos. Calcula únicamente indicadores
+    derivados (inversión, saldo y porcentaje consumido); la edición y la
+    persistencia permanecen en Home, que es la fuente única de verdad.
+  */
   /* Inversión actual = materiales más gastos registrados. */
   const invested = getProjectCost(project);
   const remaining = project.budget - invested;
@@ -1234,6 +1233,11 @@ function ProjectsView({
   backupMessage,
   backupError,
 }: ProjectsViewProps) {
+  /*
+    Vista de administración: reúne el formulario controlado de creación, las
+    acciones de exportación/importación JSON y los listados navegables. Todos
+    los cambios se comunican mediante callbacks para no duplicar estado.
+  */
   /* Las dos listas alimentan secciones con acciones y métricas distintas. */
   const activeProjects = projects.filter(
     (project) => project.status !== "completed"
@@ -1533,6 +1537,11 @@ function ProjectDashboard({
   onUpdateProject,
   onDelete,
 }: ProjectDashboardProps) {
+  /*
+    Detalle completo del proyecto seleccionado. La cabecera permite cambiar
+    su ciclo de vida y el workspace enlaza con los paneles de agenda, tareas,
+    gastos, bitácora, materiales y estadísticas de cierre.
+  */
   /* Todas las métricas se derivan durante el render para reflejar cambios al instante. */
   /* Costo invertido y cuánto presupuesto queda. */
   const invested = getProjectCost(project);
@@ -1929,6 +1938,10 @@ type ProjectDataPanelProps = {
   onUpdateProject: (updates: Partial<Project>) => void;
 };
 
+/*
+  Agenda de solo lectura con filtros por estado. Las cantidades de vencidas,
+  próximas y completadas se derivan de las tareas actuales y no se persisten.
+*/
 function SchedulePanel({ project }: { project: Project }) {
   /* Vista de fechas y estado; es deliberadamente de solo lectura. */
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
@@ -2051,6 +2064,11 @@ function SchedulePanel({ project }: { project: Project }) {
 }
 
 function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
+  /*
+    Gestiona altas y ediciones de tareas mediante un borrador local. La
+    validación limita el progreso a 0–100 y conserva la actualización
+    inmutable de la colección del proyecto.
+  */
   /* El borrador vive localmente; solo se confirma en onUpdateProject al guardar. */
   const emptyTask = {
     title: "",
@@ -2193,6 +2211,10 @@ function TasksPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
 }
 
 function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
+  /*
+    Registra costes no materiales y los agrupa visualmente por categoría. El
+    importe se valida antes de enviar la nueva lista al estado de Home.
+  */
   /* Registra gastos no materiales y los incorpora al coste total del proyecto. */
   const emptyExpense = {
     description: "",
@@ -2286,6 +2308,10 @@ function ExpensesPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
 }
 
 function DailyLogsPanel({ project, onUpdateProject }: ProjectDataPanelProps) {
+  /*
+    Captura la actividad diaria de obra. El formulario convierte trabajadores
+    a número y ordena los registros por fecha para mostrar el más reciente.
+  */
   /* Bitácora cronológica del sitio, persistida junto al proyecto padre. */
   const emptyLog = {
     date: new Date().toISOString().slice(0, 10),
@@ -2378,6 +2404,7 @@ type DashboardCardProps = {
   info?: string;
 };
 
+/* Abre la explicación contextual asociada a una tarjeta de indicador. */
 function StatInfoButton({
   label,
   text,
@@ -2460,6 +2487,7 @@ function DashboardCard({
   valueClassName = "",
   info,
 }: DashboardCardProps) {
+  /* KPI reutilizable: muestra título, valor, ayuda y color semántico. */
   /* Tarjeta reutilizable para una cifra y su etiqueta en el resumen financiero. */
   return (
     <div className="relative rounded-xl border border-[#292e37] bg-[#191d24] p-5">
@@ -2497,6 +2525,10 @@ function CompletedProjectStats({
   project,
   closeout,
 }: CompletedProjectStatsProps) {
+  /*
+    Desglose posterior al cierre: presenta coste, margen, categorías y el
+    material de mayor impacto usando exclusivamente métricas derivadas.
+  */
   /* Desglose de cierre: rentabilidad, consumo del presupuesto y categorías. */
   const resultLabel = closeout.isOverBudget
     ? "Cost overrun"

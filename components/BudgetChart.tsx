@@ -24,6 +24,10 @@ export default function BudgetChart({
   budget,
   invested,
 }: BudgetChartProps) {
+  /*
+    Convierte las dos cifras recibidas en una serie mínima para Recharts.
+    El componente no recalcula costes ni modifica el presupuesto original.
+  */
   /* Se conserva un formato uniforme para que ambas métricas compartan el eje. */
   const data = [
     {

@@ -41,6 +41,7 @@ type CsvError = {
 };
 
 function normalizeText(value: string) {
+  /* Unifica espacios, mayúsculas y texto para comparar encabezados y firmas. */
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
@@ -59,6 +60,11 @@ export default function CsvUploader({
   onMaterialsLoaded,
   existingMaterials,
 }: CsvUploaderProps) {
+  /*
+    Controla únicamente el archivo y el feedback de importación. Las filas
+    aceptadas se envían al padre; así la persistencia y la deduplicación global
+    siguen centralizadas en el proyecto seleccionado.
+  */
   /* Estado de feedback de archivo; los materiales definitivos viven en Home. */
   const [fileName, setFileName] = useState("");
   const [isImported, setIsImported] = useState(false);
