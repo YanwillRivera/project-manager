@@ -1,3 +1,20 @@
+# Project Manager — prototipo histórico
+
+Este repositorio conserva la versión anterior de Project Manager, con almacenamiento
+en el navegador. **No es la aplicación activa con autenticación y datos en la nube.**
+Se mantiene como referencia histórica; no se ha eliminado su código ni su historial.
+
+## Usar la aplicación actual
+
+[**Abrir Project Manager**](https://920df0c4f67e2a5feb06.agent37.app)
+
+El enlace lleva a la aplicación actual; para entrar a las obras necesitas tu cuenta.
+Cambiar de versión no migra automáticamente los datos locales del prototipo.
+
+## Documentación original del prototipo
+
+Lo siguiente corresponde a esta versión histórica, no al despliegue actual.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
